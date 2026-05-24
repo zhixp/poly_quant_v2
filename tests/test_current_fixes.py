@@ -60,6 +60,22 @@ class TestPolymarketPriceParsing:
 
         assert resolver._extract_yes_price(market) == pytest.approx(0.26)
 
+    def test_named_two_outcome_market_is_not_labeled_yes_no(self):
+        resolver = MarketResolver()
+        market = {
+            "question": "Wildcard vs FOKUS",
+            "outcomes": '["Wildcard", "FOKUS"]',
+            "outcomePrices": '["0.49", "0.52"]',
+            "volume": "37130",
+        }
+
+        formatted = resolver._format_binary_market_data(market)
+        assert "NAMED TWO-OUTCOME MARKET (NOT YES/NO)" in formatted
+        assert "Wildcard: $0.490 (49%)" in formatted
+        assert "FOKUS: $0.520 (52%)" in formatted
+        assert "YES:" not in formatted
+        assert "NO:" not in formatted
+
 
 class TestCrossVenueComparison:
     def test_calculate_two_way_arbitrage_profit_when_yes_no_sum_below_one(self):
@@ -240,6 +256,15 @@ class TestGeoSniperRouting:
         assert "valorant" in exclusion_body
         assert "map winner" in exclusion_body
         assert "self._is_non_geo_market(market)" in broad_watch_body
+
+    def test_geo_sniper_price_extraction_skips_named_non_yes_no_markets(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        prices_body = source.split("def _prices", 1)[1].split(
+            "def _json_list", 1
+        )[0]
+
+        assert "Skipping non-YES/NO market" in prices_body
+        assert "return None, None" in prices_body
 
 
 class TestGenesisDedicatedRouting:

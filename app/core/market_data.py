@@ -150,10 +150,15 @@ class MarketResolver:
                     outcomes = market.get('outcomes', [])
                     outcome_prices = self._normalize_outcome_prices(market.get('outcomePrices'))
                     
-                    # If only 2 outcomes (Yes/No), format as binary
-                    if len(outcomes) == 2 or len(outcome_prices) == 2:
+                    # If only 2 outcomes and they are actually Yes/No, format as binary.
+                    # Some sports/esports markets have two named outcomes (team A/team B);
+                    # those must not be labeled YES/NO.
+                    if self._is_yes_no_outcomes(outcomes) or (not outcomes and len(outcome_prices) == 2):
                         logger.info(f"Detected BINARY market: {market.get('question')}")
                         return self._format_binary_market_data(market)
+                    if len(outcome_prices) == 2:
+                        logger.info(f"Detected NAMED two-outcome market: {market.get('question')}")
+                        return self._format_named_outcome_market_data(market)
                 
                 # Multiple markets OR single market with >2 outcomes = Multi-Outcome / Group
                 logger.info(f"Detected MULTI-OUTCOME market with {len(markets)} options")
@@ -311,6 +316,45 @@ class MarketResolver:
             except ValueError:
                 return default
         return default
+
+    def _is_yes_no_outcomes(self, outcomes: List[Any]) -> bool:
+        labels = {str(outcome).strip().lower() for outcome in outcomes or []}
+        return {"yes", "no"}.issubset(labels)
+
+    def _format_named_outcome_market_data(self, market: Dict) -> str:
+        """
+        Format two-outcome named markets like Team A vs Team B.
+        These are not YES/NO markets, so the answer must reference a named side.
+        """
+        question = market.get('question', 'Unknown')
+        outcomes = self._normalize_outcome_prices(market.get('outcomes', []))
+        outcome_prices = self._normalize_outcome_prices(market.get('outcomePrices'))
+        if len(outcomes) < 2 or len(outcome_prices) < 2:
+            raise ValueError(f"Cannot align named outcome prices for market: {question}")
+
+        volume = self._safe_float(market.get('volume', 0), default=0.0)
+
+        output = ["\n" + "="*60]
+        output.append("NAMED TWO-OUTCOME MARKET (NOT YES/NO)")
+        output.append("="*60)
+        output.append("MARKET TYPE: NAMED OUTCOMES")
+        output.append("DO NOT OUTPUT YES OR NO. Choose a named outcome or HOLD.")
+        output.append("")
+        output.append(f"Market: {question}")
+        output.append(f"Volume: ${volume:,.0f}")
+        output.append("")
+        output.append("CURRENT ODDS:")
+        for outcome, price in zip(outcomes, outcome_prices):
+            parsed_price = self._safe_float(price, default=None)
+            if parsed_price is None:
+                continue
+            output.append(f"  {str(outcome).strip()}: ${parsed_price:.3f} ({parsed_price * 100:.0f}%)")
+        output.append("="*60)
+        output.append("USE THESE EXACT NAMED PRICES. DO NOT RELABEL THEM AS YES/NO.")
+        output.append("VERDICT MUST BE BUY_[OUTCOME_NAME], HOLD, or AVOID.")
+        output.append("="*60 + "\n")
+
+        return "\n".join(output)
     
     def _format_binary_market_data(self, market: Dict) -> str:
         """
@@ -325,6 +369,9 @@ class MarketResolver:
             raise ValueError(f"Cannot fetch valid prices for binary market: {question}")
         
         outcomes = self._normalize_outcome_prices(market.get('outcomes', []))
+        if outcomes and not self._is_yes_no_outcomes(outcomes):
+            return self._format_named_outcome_market_data(market)
+
         yes_index = None
         no_index = None
         for idx, outcome in enumerate(outcomes):

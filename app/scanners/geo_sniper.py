@@ -469,6 +469,9 @@ class GeoSniper:
                         yes_index = idx
                     elif label == "no":
                         no_index = idx
+                if outcomes and (yes_index is None or no_index is None):
+                    logger.debug("Skipping non-YES/NO market in GeoSniper price extraction: %s", market.get("question"))
+                    return None, None
                 if yes_index is None:
                     yes_index = 0
                 if no_index is None:
