@@ -6,6 +6,10 @@ import asyncio
 import logging
 import time
 import os
+import platform
+import socket
+import subprocess
+import sys
 from datetime import datetime
 
 import aiohttp
@@ -25,10 +29,55 @@ class AdminCog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
+        self.started_at = datetime.utcnow()
         self.sec_rss_url = os.getenv("SEC_RSS_URL", "https://www.sec.gov/news/pressreleases.rss")
         self.court_rss_url = os.getenv(
             "COURT_RSS_URL", "https://www.courtlistener.com/api/rest/v3/opinions/?format=rss"
         )
+
+    def _git_value(self, *args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=os.getcwd(),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            value = (result.stdout or "").strip()
+            return value if value else "unknown"
+        except Exception:
+            return "unknown"
+
+    @app_commands.command(name="identity", description="[ADMIN] Show exact running bot identity")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def identity(self, interaction: discord.Interaction):
+        """Shows the runtime fingerprint so operators can prove which host/code answered."""
+        await interaction.response.defer(ephemeral=True)
+
+        uptime_seconds = int((datetime.utcnow() - self.started_at).total_seconds())
+        remote = self._git_value("remote", "get-url", "origin")
+        if remote != "unknown" and "@" in remote:
+            remote = "configured"
+
+        lines = [
+            "**POLYQUANT RUNTIME IDENTITY**",
+            f"Bot user: {self.bot.user} ({self.bot.user.id if self.bot.user else 'unknown'})",
+            f"Interaction application: {getattr(interaction, 'application_id', 'unknown')}",
+            f"Guild: {interaction.guild.name if interaction.guild else 'DM'} ({interaction.guild_id or 'n/a'})",
+            f"Host: {socket.gethostname()}",
+            f"Platform: {platform.platform()}",
+            f"PID: {os.getpid()}",
+            f"CWD: {os.getcwd()}",
+            f"Python: {sys.executable}",
+            f"Started UTC: {self.started_at:%Y-%m-%d %H:%M:%S}",
+            f"Admin cog uptime: {uptime_seconds}s",
+            f"Git branch: {self._git_value('branch', '--show-current')}",
+            f"Git commit: {self._git_value('rev-parse', '--short', 'HEAD')}",
+            f"Git remote: {remote}",
+        ]
+        await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
     
     @app_commands.command(name="debug_config", description="🔧 [ADMIN] Show server configuration status")
     @app_commands.checks.has_permissions(administrator=True)

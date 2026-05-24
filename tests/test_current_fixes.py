@@ -349,6 +349,24 @@ class TestAskHallucinationGuardrails:
         assert "DO NOT invent match scores" in source
 
 
+class TestRuntimeIdentityDiagnostics:
+    def test_admin_identity_command_exposes_runtime_fingerprint_without_secrets(self):
+        source = Path("app/cogs/admin.py").read_text(encoding="utf-8")
+        assert '@app_commands.command(name="identity"' in source
+        assert "POLYQUANT RUNTIME IDENTITY" in source
+        assert "Interaction application" in source
+        assert "Git commit" in source
+        assert "Git remote" in source
+        assert "sys.executable" in source
+        assert "os.getcwd()" in source
+        identity_body = source.split("async def identity", 1)[1].split(
+            '@app_commands.command(name="debug_config"', 1
+        )[0]
+        assert "DISCORD_TOKEN" not in identity_body
+        assert "SUPABASE_KEY" not in identity_body
+        assert "GEMINI_KEYS" not in identity_body
+
+
 class TestArbAlertRoutingGuardrails:
     def test_deterministic_arb_checker_has_no_discord_send_path(self):
         source = Path("app/core/bookmaker_client.py").read_text(encoding="utf-8")
