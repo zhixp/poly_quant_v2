@@ -326,6 +326,29 @@ class TestExactMappingSafety:
         assert "Do not claim executable arbitrage unless status is" in source
 
 
+class TestAskHallucinationGuardrails:
+    def test_query_injects_answer_guardrails_before_agent_council(self):
+        source = Path("app/cogs/query.py").read_text(encoding="utf-8")
+        assert "def _build_answer_guardrails" in source
+        assert "Live Polymarket odds are prices, not proof" in source
+        assert "YES means the exact market question resolves true" in source
+        assert "final_verdict must be HOLD" in source
+        assert "Sources are limited to the data shown above" in source
+        assert "Data verified across multiple sources" not in source
+
+        ask_body = source.split("async def ask", 1)[1].split("# 5. The Council Deliberates", 1)[0]
+        assert "answer_guardrails = self._build_answer_guardrails" in ask_body
+        assert "context_parts = [answer_guardrails]" in ask_body
+
+    def test_judge_prompt_forbids_price_only_directional_claims(self):
+        source = Path("app/Prompts/judge.py").read_text(encoding="utf-8")
+        assert "Live market prices are not evidence" in source
+        assert "final_verdict must be HOLD" in source
+        assert "NO means the exact market question resolves false" in source
+        assert "Do not reinterpret NO as a different team" in source
+        assert "DO NOT invent match scores" in source
+
+
 class TestArbAlertRoutingGuardrails:
     def test_deterministic_arb_checker_has_no_discord_send_path(self):
         source = Path("app/core/bookmaker_client.py").read_text(encoding="utf-8")

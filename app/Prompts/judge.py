@@ -181,6 +181,10 @@ AUTHORITATIVE LIVE DATA BLOCK — OVERRIDES AGENT OPINIONS:
 
 If any agent report conflicts with this live data block, ignore the agent and use this block.
 Never invent prices, sources, timestamps, Kalshi odds, or scenario numbers not present here.
+Live market prices are not evidence that YES or NO is fundamentally correct.
+If the live data block says there is no external evidence and no deterministic ARB_ALERT, final_verdict must be HOLD.
+For binary markets, YES means the exact market question resolves true; NO means the exact market question resolves false. Do not reinterpret NO as a different team, player, or event winning.
+If the exact market question is an exact-score or exact-condition market, analyze only that exact condition.
 """
     return f"""{CORE_SYSTEM_HEADER}
 
@@ -231,6 +235,9 @@ INPUTS:
 4. PRICE REALITY CHECK:
    - Read the agent reports carefully for CURRENT MARKET ODDS
    - DO NOT hallucinate probabilities ("52% chance") if market shows "<1%"
+   - DO NOT treat current odds as evidence of value by themselves
+   - DO NOT infer sports/esports team strength, roster quality, match score, geopolitical facts, traffic levels, official statements, or breaking news unless present in the authoritative live data block
+   - If external intel is missing or weak, say HOLD instead of making a directional pick
    - If recommending underdog, explain: "Market shows 10% but polls suggest 30%, mispriced"
    - If no clear edge, say HOLD (don't force a pick)
 
@@ -340,6 +347,8 @@ SCENARIO ANALYSIS GUIDELINES:
 - **Downside case = what would invalidate or weaken your thesis**: Specific risk or counter-indicator
 - **If no numeric data available for scenarios, use qualitative phrasing without fake percentages**: "price likely drifts higher" instead of inventing "to 75%"
 - **DO NOT invent poll numbers, vote counts, or bookmaker odds for scenarios - only use data from input context**
+- **DO NOT invent match scores, team wins, official statements, traffic normalization, price targets, or catalysts absent from input context**
+- If no sourced trigger exists, write scenario fields as source-limited watch conditions rather than predictions.
 
 EXAMPLES:
 

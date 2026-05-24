@@ -147,6 +147,25 @@ class QueryCog(commands.Cog):
         lines.append('  Judge rule: Do not claim executable arbitrage unless status is "ARB_ALERT"; if WATCH, explain why it is only a watch condition.')
         lines.append("")
         return lines
+
+    def _build_answer_guardrails(self, has_external_context: bool, has_deterministic_arb: bool) -> str:
+        """Deterministic instructions that keep /ask from treating odds as evidence."""
+        evidence_state = "external evidence present" if has_external_context else "no external evidence found"
+        arb_state = "deterministic arb context present" if has_deterministic_arb else "no deterministic arb context"
+        return "\n".join([
+            "=" * 60,
+            "ANSWER GUARDRAILS (AUTHORITATIVE)",
+            "=" * 60,
+            f"Evidence state: {evidence_state}.",
+            f"Arbitrage state: {arb_state}.",
+            "Live Polymarket odds are prices, not proof that YES or NO is correct.",
+            "Do not infer team strength, player stats, geopolitical facts, or news events unless they appear in EXTERNAL INTEL or the live market block.",
+            "For binary markets, YES means the exact market question resolves true; NO means that exact question resolves false. Do not reinterpret NO as a different team/player/event winning.",
+            "If there is no external evidence and no deterministic ARB_ALERT, final_verdict must be HOLD.",
+            "If source time is not present, set primary_source_time to Unknown.",
+            "Scenario analysis must not invent scores, match results, official statements, traffic levels, odds targets, or timelines absent from context.",
+            "=" * 60,
+        ])
     
     @app_commands.command(name="ask", description="🤖 Get AI analysis on prediction markets")
     @app_commands.describe(
@@ -237,10 +256,13 @@ class QueryCog(commands.Cog):
             
             # 3. Gather News/Context (Eyes)
             search_data = await self.bot.router.deep_search(safe_question)
+            has_external_context = bool(search_data and "EXTERNAL INTEL" in search_data)
+            has_deterministic_arb = "DETERMINISTIC ARBITRAGE CONTEXT" in vegas_data and "Status: ARB_ALERT" in vegas_data
+            answer_guardrails = self._build_answer_guardrails(has_external_context, has_deterministic_arb)
             
             # 4. Combine Market Prices + Vegas Odds + News Context
             # CRITICAL: Market data comes FIRST so AI sees real prices before anything else
-            context_parts = []
+            context_parts = [answer_guardrails]
             
             if market_data:
                 # If user specified an outcome, add explicit instruction
@@ -377,7 +399,7 @@ class QueryCog(commands.Cog):
 **Reasoning:**
 {rationale}{data_block}{scenario_block}
 
-*Note: Model confidence is subjective and not a calibrated probability. Analysis complete. Data verified across multiple sources.*"""
+*Note: Model confidence is subjective and not a calibrated probability. Sources are limited to the data shown above; unknowns are left unknown.*"""
                 
             except (json.JSONDecodeError, AttributeError, KeyError) as e:
                 # Fallback: Use raw text if JSON parsing fails
