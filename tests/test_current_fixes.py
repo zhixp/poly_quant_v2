@@ -461,6 +461,40 @@ class TestArbAlertRoutingGuardrails:
             if sends_discord_alert:
                 assert "get_all_arb_channels" in source, f"{path} sends arb alerts without arb_channel_id routing"
 
+    def test_live_cross_venue_arb_scanner_is_started_once_by_main(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        assert "CrossVenueArbScanner" in source
+        assert "self.cross_venue_arb_scanner = CrossVenueArbScanner(self)" in source
+        assert "self.loop.create_task(self.cross_venue_arb_scanner.start())" in source
+
+    def test_live_cross_venue_arb_scanner_uses_exact_active_kalshi_mappings_only(self):
+        source = Path("app/scanners/cross_venue_arb_scanner.py").read_text(encoding="utf-8")
+        exact_body = source.split("async def _active_exact_kalshi_mappings", 1)[1].split(
+            "def _alert_directions", 1
+        )[0]
+
+        assert "get_all_active_mappings" in exact_body
+        assert 'mapping.venue.lower() != "kalshi"' in exact_body
+        assert "not mapping.polymarket_market_slug" in exact_body
+        assert "is_exact_active_mapping" in exact_body
+        assert "search_mappings" not in source
+        assert "get_mappings_for_polymarket" not in source
+
+    def test_live_cross_venue_arb_scanner_only_sends_arb_alert_status_to_arb_channel(self):
+        source = Path("app/scanners/cross_venue_arb_scanner.py").read_text(encoding="utf-8")
+        alert_body = source.split("def _alert_directions", 1)[1].split(
+            "async def _send_alert", 1
+        )[0]
+        send_body = source.split("async def _send_alert", 1)[1].split(
+            "def _build_embed", 1
+        )[0]
+
+        assert 'arb.get("status") != "ARB_ALERT"' in alert_body
+        assert 'data.get("status") == "ARB_ALERT"' in alert_body
+        assert "get_all_arb_channels" in send_body
+        assert "get_all_alert_channels" not in source
+        assert "without fallback" in send_body
+
 
 class TestDedicatedChannelPrimitives:
     def test_schema_and_migration_define_dedicated_channel_columns(self):

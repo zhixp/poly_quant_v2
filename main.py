@@ -15,6 +15,7 @@ from app.scanners.inefficiency_scanner import InefficiencyScanner
 from app.scanners.basket_scanner import BasketScanner
 from app.scanners.resolution_assistant import ResolutionAssistant
 from app.scanners.geo_sniper import GeoSniper
+from app.scanners.cross_venue_arb_scanner import CrossVenueArbScanner
 from app.core.server_manager import server_manager
 
 # Logging Setup - Windows-compatible encoding
@@ -48,6 +49,7 @@ class PolyQuantBot(commands.Bot):
         self.basket_scanner = BasketScanner(self)
         self.resolution_assistant = ResolutionAssistant(self)
         self.geo_sniper = GeoSniper(self)
+        self.cross_venue_arb_scanner = CrossVenueArbScanner(self)
         self._background_tasks_started = False
 
     async def on_ready(self):
@@ -104,6 +106,8 @@ class PolyQuantBot(commands.Bot):
         logger.info("📘 Resolution Assistant: Active (Resolution Intel)")
 
         self.loop.create_task(self.geo_sniper.start())
+        self.loop.create_task(self.cross_venue_arb_scanner.start())
+        logger.info("Cross-Venue Arb Scanner: Active (exact Poly/Kalshi mappings only)")
         logger.info("🛰️ Geo Sniper: Active (Geopolitical resolution alerts)")
         
         logger.info("✅ All systems operational - Dual Engine Mode")
