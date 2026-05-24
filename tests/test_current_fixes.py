@@ -210,6 +210,37 @@ class TestGeoSniperRouting:
         assert "GEO_SNIPER_X_RSS_FEEDS configured but ignored" in config_body
         assert "return feeds" in config_body
 
+    def test_geo_sniper_does_not_treat_fokus_as_us_geo_keyword(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        keyword_body = source.split("def _has_geo_keyword", 1)[1].split(
+            "def _has_geo_confirmation_term", 1
+        )[0]
+        broad_watch_body = source.split("Add high-volume active geopolitical markets", 1)[1].split(
+            "return markets", 1
+        )[0]
+
+        assert "tokens = set" in keyword_body
+        assert 'normalized in {"us", "u.s."}' in keyword_body
+        assert '"us" in tokens' in keyword_body
+        assert "normalized in tokens" in keyword_body
+        assert "k in question" not in broad_watch_body
+
+    def test_geo_sniper_excludes_esports_from_broad_watchlist(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        exclusion_body = source.split("def _is_non_geo_market", 1)[1].split(
+            "def _has_geo_keyword", 1
+        )[0]
+        broad_watch_body = source.split("Add high-volume active geopolitical markets", 1)[1].split(
+            "return markets", 1
+        )[0]
+
+        assert "NON_GEO_CATEGORIES" in source
+        assert "esports" in source
+        assert "counter-strike" in exclusion_body
+        assert "valorant" in exclusion_body
+        assert "map winner" in exclusion_body
+        assert "self._is_non_geo_market(market)" in broad_watch_body
+
 
 class TestGenesisDedicatedRouting:
     def test_genesis_uses_dedicated_new_and_curated_market_channels(self):

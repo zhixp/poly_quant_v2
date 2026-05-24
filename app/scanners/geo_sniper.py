@@ -37,6 +37,14 @@ GEO_KEYWORDS = {
     "hostilities", "sanctions", "nuclear", "missile", "blockade", "ports",
 }
 
+GEO_CONFIRMATION_TERMS = {
+    "agreement", "ceasefire", "hostilities", "hormuz", "iran", "war", "sanctions",
+}
+
+NON_GEO_CATEGORIES = {
+    "sports", "esports", "games", "gaming",
+}
+
 PERMANENT_TERMS = {
     "permanent", "lasting", "definitive", "final agreement", "formally adopt",
     "signed", "treaty", "permanently cease", "lasting end",
@@ -186,8 +194,10 @@ class GeoSniper:
         async with session.get(f"{GAMMA_API}/markets", params=params) as resp:
             if resp.status == 200:
                 for market in await resp.json():
-                    question = (market.get("question") or "").lower()
-                    if not any(k in question for k in GEO_KEYWORDS):
+                    if self._is_non_geo_market(market):
+                        continue
+                    question = market.get("question") or ""
+                    if not self._has_geo_keyword(question):
                         continue
                     market_slug = market.get("slug") or market.get("id")
                     if not market_slug or market_slug in seen:
@@ -493,15 +503,45 @@ class GeoSniper:
         for hit in source_hits:
             blob = f"{hit.get('title', '')} {hit.get('text', '')}".lower()
             score = sum(1 for token in q_tokens if token in blob)
-            if score >= 1 and any(k in blob for k in ("iran", "hormuz", "ceasefire", "hostilities", "agreement")):
+            if score >= 1 and self._has_geo_confirmation_term(blob):
                 matches.append(hit)
         return matches
 
     def _is_geo_relevant(self, text: str) -> bool:
-        blob = text.lower()
-        return any(k in blob for k in GEO_KEYWORDS) and any(
-            t in blob for t in ["agreement", "ceasefire", "hostilities", "hormuz", "iran", "war", "sanctions"]
+        return self._has_geo_keyword(text) and self._has_geo_confirmation_term(text)
+
+    def _is_non_geo_market(self, market: Dict[str, Any]) -> bool:
+        category_blob = " ".join(
+            str(market.get(key) or "")
+            for key in ("category", "subcategory", "event_title", "groupItemTitle")
+        ).lower()
+        question = str(market.get("question") or "").lower()
+        return (
+            any(category in category_blob for category in NON_GEO_CATEGORIES)
+            or any(term in question for term in ("counter-strike", "valorant", "league of legends", "dota", "map winner", "moneyline"))
         )
+
+    def _has_geo_keyword(self, text: str) -> bool:
+        blob = text.lower()
+        tokens = set(re.findall(r"[a-z0-9]+", blob))
+        for keyword in GEO_KEYWORDS:
+            normalized = keyword.lower()
+            if " " in normalized:
+                if normalized in blob:
+                    return True
+            elif normalized in {"us", "u.s."}:
+                if normalized == "u.s." and re.search(r"(?<![a-z0-9])u\.s\.(?![a-z0-9])", blob):
+                    return True
+                if "us" in tokens:
+                    return True
+            elif normalized in tokens:
+                return True
+        return False
+
+    def _has_geo_confirmation_term(self, text: str) -> bool:
+        blob = text.lower()
+        tokens = set(re.findall(r"[a-z0-9]+", blob))
+        return any(term in tokens for term in GEO_CONFIRMATION_TERMS)
 
     def _html_to_text(self, html: str) -> str:
         html = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
