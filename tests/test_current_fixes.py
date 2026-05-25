@@ -266,6 +266,53 @@ class TestGeoSniperRouting:
         assert "Skipping non-YES/NO market" in prices_body
         assert "return None, None" in prices_body
 
+    def test_geo_sniper_no_longer_defaults_to_iran_only_event_watchlist(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        default_event_body = source.split("DEFAULT_EVENT_SLUGS", 1)[1].split(
+            "GEO_KEYWORDS", 1
+        )[0]
+        direct_source_body = source.split("DEFAULT_DIRECT_SOURCES", 1)[1].split(
+            "@dataclass", 1
+        )[0]
+
+        assert "us-x-iran-permanent-peace-deal-by" not in default_event_body
+        assert "edition.cnn.com/2026/05/23" not in direct_source_body
+        assert "GEO_SNIPER_EVENT_SLUGS" in source
+        assert "GEO_SNIPER_DIRECT_SOURCES" in source
+
+    def test_geo_sniper_uses_time_cooldown_not_price_bucket_dedupe(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        analyze_body = source.split("async def _analyze_market", 1)[1].split(
+            "async def _recent_yes_move", 1
+        )[0]
+        cooldown_body = source.split("def _is_alert_on_cooldown", 1)[1].split(
+            "def _mark_alert_seen", 1
+        )[0]
+
+        assert "GEO_SNIPER_MARKET_COOLDOWN_SECONDS" in source
+        assert "self._alert_key(slug, signal, catalyst)" in analyze_body
+        assert "round(yes_price, 2)" not in analyze_body
+        assert "alert_cooldowns" in cooldown_body
+        assert "market_cooldown_seconds" in cooldown_body
+
+    def test_geo_sniper_does_not_alert_on_whale_flow_without_matching_source(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        analyze_body = source.split("async def _analyze_market", 1)[1].split(
+            "async def _recent_yes_move", 1
+        )[0]
+
+        assert "if not signal and whale_flow and relevant_sources:" in analyze_body
+        assert "if not signal and whale_flow:" not in analyze_body
+
+    def test_geo_sniper_source_matching_requires_two_market_terms(self):
+        source = Path("app/scanners/geo_sniper.py").read_text(encoding="utf-8")
+        matching_body = source.split("def _matching_sources", 1)[1].split(
+            "def _alert_key", 1
+        )[0]
+
+        assert "score >= 2" in matching_body
+        assert "score >= 1" not in matching_body
+
 
 class TestGenesisDedicatedRouting:
     def test_genesis_uses_dedicated_new_and_curated_market_channels(self):

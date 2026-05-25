@@ -27,9 +27,9 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 DATA_API = "https://data-api.polymarket.com"
 
-DEFAULT_EVENT_SLUGS = [
-    "us-x-iran-permanent-peace-deal-by",
-]
+# Keep explicit event slugs opt-in. A hardcoded default made the channel behave
+# like an Iran ladder watcher instead of a broader geopolitics scanner.
+DEFAULT_EVENT_SLUGS = []
 
 GEO_KEYWORDS = {
     "iran", "u.s.", "us", "united states", "trump", "israel", "hezbollah",
@@ -65,10 +65,9 @@ DEFAULT_RSS_FEEDS = {
     "Truth Social realDonaldTrump": "https://truthsocial.com/@realDonaldTrump.rss",
 }
 
-DEFAULT_DIRECT_SOURCES = [
-    # Known catalyst for the May 26 US/Iran ladder squeeze.
-    "https://edition.cnn.com/2026/05/23/middleeast/iran-us-progress-framework-diplomacy-intl",
-]
+# Direct catalyst pages are useful for a live incident, but stale hardcoded
+# articles can keep retriggering old narratives. Configure via env when needed.
+DEFAULT_DIRECT_SOURCES = []
 
 
 @dataclass
@@ -97,9 +96,12 @@ class GeoSniper:
         self.enabled = os.getenv("GEO_SNIPER_ENABLED", "true").lower() not in {"0", "false", "no"}
         self.interval_seconds = int(os.getenv("GEO_SNIPER_INTERVAL_SECONDS", "300"))
         self.min_price_move = float(os.getenv("GEO_SNIPER_MIN_PRICE_MOVE", "0.07"))
-        self.min_whale_usdc = float(os.getenv("GEO_SNIPER_MIN_WHALE_USDC", "5000"))
+        self.min_whale_usdc = float(os.getenv("GEO_SNIPER_MIN_WHALE_USDC", "15000"))
         self.max_markets_per_scan = int(os.getenv("GEO_SNIPER_MAX_MARKETS", "40"))
+        self.broad_market_limit = int(os.getenv("GEO_SNIPER_BROAD_MARKET_LIMIT", "250"))
+        self.market_cooldown_seconds = int(os.getenv("GEO_SNIPER_MARKET_COOLDOWN_SECONDS", "21600"))
         self.seen_alerts = set()
+        self.alert_cooldowns: Dict[str, float] = {}
         self.scan_count = 0
         self.last_scan_summary: Dict[str, Any] = {}
 
@@ -190,7 +192,7 @@ class GeoSniper:
                         markets.append(market)
 
         # Add high-volume active geopolitical markets from Gamma as a broader watchlist.
-        params = {"limit": 100, "active": "true", "closed": "false", "order": "volume", "ascending": "false"}
+        params = {"limit": self.broad_market_limit, "active": "true", "closed": "false", "order": "volume", "ascending": "false"}
         async with session.get(f"{GAMMA_API}/markets", params=params) as resp:
             if resp.status == 200:
                 for market in await resp.json():
@@ -333,7 +335,7 @@ class GeoSniper:
             side = "WATCH; verify catalyst before taking side"
             confidence = "medium"
 
-        if not signal and whale_flow:
+        if not signal and whale_flow and relevant_sources:
             signal = "large recent flow detected in a geopolitical market"
             side = "WATCH orderbook + source confirmation"
             confidence = "low-medium"
@@ -341,10 +343,10 @@ class GeoSniper:
         if not signal:
             return None
 
-        alert_key = (slug, signal[:60], round(yes_price, 2), catalyst[:80])
-        if alert_key in self.seen_alerts:
+        alert_key = self._alert_key(slug, signal, catalyst)
+        if self._is_alert_on_cooldown(alert_key):
             return None
-        self.seen_alerts.add(alert_key)
+        self._mark_alert_seen(alert_key)
 
         return GeoSignal(
             market_question=question,
@@ -506,9 +508,39 @@ class GeoSniper:
         for hit in source_hits:
             blob = f"{hit.get('title', '')} {hit.get('text', '')}".lower()
             score = sum(1 for token in q_tokens if token in blob)
-            if score >= 1 and self._has_geo_confirmation_term(blob):
+            if score >= 2 and self._has_geo_confirmation_term(blob):
                 matches.append(hit)
         return matches
+
+    def _alert_key(self, market_slug: str, signal: str, catalyst: str) -> str:
+        source_fingerprint = re.sub(r"[^a-z0-9]+", "-", (catalyst or "no-source").lower()).strip("-")[:80]
+        return f"{market_slug}:{self._signal_family(signal)}:{source_fingerprint}"
+
+    def _signal_family(self, signal: str) -> str:
+        text = (signal or "").lower()
+        if "framework" in text or "mou" in text:
+            return "rule-framework"
+        if "permanent" in text or "signed agreement" in text:
+            return "permanent-catalyst"
+        if "yes squeeze" in text:
+            return "price-yes-squeeze"
+        if "yes dump" in text or "no bid" in text:
+            return "price-yes-dump"
+        if "large recent flow" in text:
+            return "source-backed-flow"
+        return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:48] or "generic"
+
+    def _is_alert_on_cooldown(self, alert_key: str) -> bool:
+        now = datetime.now(timezone.utc).timestamp()
+        last_seen = self.alert_cooldowns.get(alert_key)
+        if last_seen and now - last_seen < self.market_cooldown_seconds:
+            return True
+        return False
+
+    def _mark_alert_seen(self, alert_key: str) -> None:
+        now = datetime.now(timezone.utc).timestamp()
+        self.seen_alerts.add(alert_key)
+        self.alert_cooldowns[alert_key] = now
 
     def _is_geo_relevant(self, text: str) -> bool:
         return self._has_geo_keyword(text) and self._has_geo_confirmation_term(text)
