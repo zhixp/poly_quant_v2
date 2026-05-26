@@ -326,6 +326,25 @@ class QueryCog(commands.Cog):
                 primary_source_time = verdict_data.get('primary_source_time')
                 quoted_prices = verdict_data.get('quoted_market_prices')
                 scenarios = verdict_data.get('scenario_analysis', {})
+
+                # Deterministic post-judge safety rail: if no external context and no
+                # executable arb, the model is not allowed to turn market odds into a
+                # directional thesis. This catches judge hallucinations even if the
+                # LLM ignores prompt guardrails.
+                if not has_external_context and not has_deterministic_arb and final_verdict not in ['HOLD', 'AVOID']:
+                    logger.warning(
+                        "Judge produced directional verdict without evidence/arb; forcing HOLD: %s",
+                        final_verdict,
+                    )
+                    final_verdict = 'HOLD'
+                    confidence = min(int(confidence or 0), 55)
+                    rationale = (
+                        "No external evidence or executable arbitrage was found; live Polymarket odds alone "
+                        "do not prove an edge. HOLD until a verified source or deterministic arb appears."
+                    )
+                    primary_source = primary_source or 'Polymarket'
+                    primary_source_time = primary_source_time or 'Unknown'
+                    scenarios = {}
                 
                 # Format verdict nicely for multi-candidate markets
                 if final_verdict.startswith('BUY_'):

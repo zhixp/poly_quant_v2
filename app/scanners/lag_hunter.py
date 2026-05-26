@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
@@ -17,8 +18,21 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 RSS_FEEDS = {
     "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss",
     "SEC Press": "https://www.sec.gov/news/pressreleases.rss",
-    "FiveThirtyEight": "https://fivethirtyeight.com/all/feed"
+    "FiveThirtyEight": "https://fivethirtyeight.com/all/feed",
+    "BBC World": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
 }
+
+def configured_rss_feeds():
+    feeds = dict(RSS_FEEDS)
+    extra = os.getenv("LAG_HUNTER_RSS_FEEDS", "")
+    for idx, item in enumerate([x.strip() for x in extra.split(",") if x.strip()], start=1):
+        if "=" in item:
+            name, url = item.split("=", 1)
+            feeds[name.strip() or f"Custom {idx}"] = url.strip()
+        else:
+            feeds[f"Custom {idx}"] = item
+    return feeds
 
 # High-signal keyword patterns for better matching
 # Maps topics to preferred keywords (proper nouns, tickers, key terms)
@@ -49,6 +63,10 @@ class LagHunter:
         self.scan_count = 0
         self.zero_alert_streak = 0
         self.last_scan_summary = {}
+        self.rss_feeds = configured_rss_feeds()
+        self.market_limit = int(os.getenv("LAG_HUNTER_MARKET_LIMIT", "500"))
+        self.match_threshold = int(os.getenv("LAG_HUNTER_MATCH_THRESHOLD", "2"))
+        self.freshness_hours = int(os.getenv("LAG_HUNTER_FRESHNESS_HOURS", "12"))
 
     def _normalize_timestamp(self, dt):
         """
@@ -166,14 +184,14 @@ class LagHunter:
         
         # Parallel fetch all RSS feeds (async)
         async with aiohttp.ClientSession() as session:
-            tasks = [self._fetch_rss_async(session, source, url) for source, url in RSS_FEEDS.items()]
+            tasks = [self._fetch_rss_async(session, source, url) for source, url in self.rss_feeds.items()]
             all_entries = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Fetch markets ONCE per scan (not per entry)
         try:
             gamma_url = "https://gamma-api.polymarket.com/markets"
             params = {
-                "limit": 100,  # Increased from 50 for better coverage
+                "limit": self.market_limit,
                 "active": "true",
                 "closed": "false"
             }
@@ -212,9 +230,9 @@ class LagHunter:
                 try:
                     metrics['total_entries'] += 1
                     
-                    # 1. Freshness Check (< 4 hours old)
+                    # 1. Freshness Check (configurable; default 12h to avoid a dead scanner when feeds are quiet)
                     published = self._normalize_timestamp(entry['published'])
-                    if current_time - published > timedelta(hours=4):
+                    if current_time - published > timedelta(hours=self.freshness_hours):
                         continue
                     
                     feed_stats['fresh'] += 1
@@ -242,8 +260,8 @@ class LagHunter:
                         
                         match_score = self._match_score(keywords, market_question)
                         
-                        # Require at least 2 matching keywords for signal quality
-                        if match_score >= 2:
+                        # Require enough matching keywords for signal quality
+                        if match_score >= self.match_threshold:
                             metrics['matches_found'] += 1
                             feed_stats['matches'] += 1
                             
@@ -292,7 +310,7 @@ class LagHunter:
         # Log comprehensive scan summary
         logger.info(
             f"📡 LagHunter Scan #{metrics['scan_id']} complete in {scan_duration:.0f}ms | "
-            f"Feeds: {metrics['feeds_fetched']}/{len(RSS_FEEDS)} OK | "
+            f"Feeds: {metrics['feeds_fetched']}/{len(self.rss_feeds)} OK | "
             f"Entries: {metrics['total_entries']} total, {metrics['fresh_entries']} fresh, {metrics['already_seen']} seen | "
             f"Markets: {metrics['markets_fetched']} | "
             f"Matches: {metrics['matches_found']} | "
@@ -312,7 +330,7 @@ class LagHunter:
             if self.zero_alert_streak >= 10:  # 10 minutes of silence
                 logger.warning(
                     f"⚠️ LagHunter: {self.zero_alert_streak} scans with zero alerts | "
-                    f"Last scan: feeds_ok={metrics['feeds_fetched']}/{len(RSS_FEEDS)}, "
+                    f"Last scan: feeds_ok={metrics['feeds_fetched']}/{len(self.rss_feeds)}, "
                     f"markets={metrics['markets_fetched']}, fresh_entries={metrics['fresh_entries']}, "
                     f"matches={metrics['matches_found']}"
                 )
@@ -433,14 +451,14 @@ Respond ONLY with valid JSON. No additional text."""
             if 'false' in response.lower() and 'is_relevant' in response.lower():
                 return False
             
-            # Default: if we can't parse, be conservative and allow it (but log warning)
-            logger.warning(f"Could not parse agent response for relevance check. Defaulting to allow. Response: {response[:200]}")
-            return True
+            # Default: parser failure means no source-grounded relevance. Do not spam.
+            logger.warning(f"Could not parse agent response for relevance check. Defaulting to reject. Response: {response[:200]}")
+            return False
             
         except Exception as e:
             logger.error(f"Agent relevance check failed: {e}")
-            # On error, default to allowing (don't break the flow)
-            return True
+            # On error, reject; a false positive lag alert is worse than silence.
+            return False
 
     async def alert_discord(self, source, headline, market, market_slug=""):
         """

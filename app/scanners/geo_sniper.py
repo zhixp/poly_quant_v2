@@ -35,6 +35,10 @@ GEO_KEYWORDS = {
     "iran", "u.s.", "us", "united states", "trump", "israel", "hezbollah",
     "hormuz", "strait", "ceasefire", "peace", "deal", "agreement", "war",
     "hostilities", "sanctions", "nuclear", "missile", "blockade", "ports",
+    "china", "taiwan", "russia", "ukraine", "nato", "europe", "india",
+    "pakistan", "turkey", "syria", "lebanon", "gaza", "palestine", "hamas",
+    "venezuela", "colombia", "mexico", "canada", "korea", "japan", "election",
+    "president", "prime minister", "military", "strike", "tariff", "border",
 }
 
 GEO_CONFIRMATION_TERMS = {
@@ -99,9 +103,13 @@ class GeoSniper:
         self.min_whale_usdc = float(os.getenv("GEO_SNIPER_MIN_WHALE_USDC", "15000"))
         self.max_markets_per_scan = int(os.getenv("GEO_SNIPER_MAX_MARKETS", "40"))
         self.broad_market_limit = int(os.getenv("GEO_SNIPER_BROAD_MARKET_LIMIT", "250"))
+        self.discovery_pages = int(os.getenv("GEO_SNIPER_DISCOVERY_PAGES", "6"))
+        self.max_alerts_per_scan = int(os.getenv("GEO_SNIPER_MAX_ALERTS_PER_SCAN", "6"))
         self.market_cooldown_seconds = int(os.getenv("GEO_SNIPER_MARKET_COOLDOWN_SECONDS", "21600"))
+        self.family_cooldown_seconds = int(os.getenv("GEO_SNIPER_FAMILY_COOLDOWN_SECONDS", "3600"))
         self.seen_alerts = set()
         self.alert_cooldowns: Dict[str, float] = {}
+        self.family_cooldowns: Dict[str, float] = {}
         self.scan_count = 0
         self.last_scan_summary: Dict[str, Any] = {}
 
@@ -155,9 +163,15 @@ class GeoSniper:
                     signals.append(signal)
 
             summary["signals_found"] = len(signals)
-            for signal in signals:
+            sent_families = set()
+            for signal in signals[: self.max_alerts_per_scan]:
+                family_key = self._family_key(signal.market_slug, signal.signal, signal.catalyst)
+                if family_key in sent_families or self._is_family_on_cooldown(family_key):
+                    continue
                 if await self._send_alert(signal):
                     summary["alerts_sent"] += 1
+                    sent_families.add(family_key)
+                    self._mark_family_seen(family_key)
 
         summary["duration_ms"] = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         self.last_scan_summary = summary
@@ -191,15 +205,27 @@ class GeoSniper:
                         market["_parent_slug"] = parent_slug
                         markets.append(market)
 
-        # Add high-volume active geopolitical markets from Gamma as a broader watchlist.
-        params = {"limit": self.broad_market_limit, "active": "true", "closed": "false", "order": "volume", "ascending": "false"}
-        async with session.get(f"{GAMMA_API}/markets", params=params) as resp:
-            if resp.status == 200:
+        # Add high-volume active geopolitical markets from multiple Gamma pages.
+        # The first volume-sorted page alone repeatedly surfaces the same
+        # high-volume ladder and misses lower-volume geopolitics edge.
+        per_page = max(1, min(self.broad_market_limit, 500))
+        for page in range(max(1, self.discovery_pages)):
+            params = {
+                "limit": per_page,
+                "offset": page * per_page,
+                "active": "true",
+                "closed": "false",
+                "order": "volume",
+                "ascending": "false",
+            }
+            async with session.get(f"{GAMMA_API}/markets", params=params) as resp:
+                if resp.status != 200:
+                    logger.warning("Gamma broad market fetch failed page=%s status=%s", page, resp.status)
+                    continue
                 for market in await resp.json():
                     if self._is_non_geo_market(market):
                         continue
-                    question = market.get("question") or ""
-                    if not self._has_geo_keyword(question):
+                    if not self._is_geo_market_candidate(market):
                         continue
                     market_slug = market.get("slug") or market.get("id")
                     if not market_slug or market_slug in seen:
@@ -208,6 +234,15 @@ class GeoSniper:
                     markets.append(market)
 
         return markets
+
+    def _is_geo_market_candidate(self, market: Dict[str, Any]) -> bool:
+        if self._is_non_geo_market(market):
+            return False
+        blob = " ".join(
+            str(market.get(key) or "")
+            for key in ("question", "description", "slug", "event_title", "groupItemTitle")
+        )
+        return self._has_geo_keyword(blob)
 
     async def _fetch_source_hits(self, session: aiohttp.ClientSession) -> List[Dict[str, str]]:
         hits: List[Dict[str, str]] = []
@@ -526,6 +561,10 @@ class GeoSniper:
             return "price-yes-squeeze"
         if "yes dump" in text or "no bid" in text:
             return "price-yes-dump"
+        if re.search(r"\byes\s*[+-]", text):
+            return "price-yes-move"
+        if re.search(r"\bno\s*[+-]", text):
+            return "price-no-move"
         if "large recent flow" in text:
             return "source-backed-flow"
         return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:48] or "generic"
@@ -541,6 +580,26 @@ class GeoSniper:
         now = datetime.now(timezone.utc).timestamp()
         self.seen_alerts.add(alert_key)
         self.alert_cooldowns[alert_key] = now
+
+    def _family_key(self, market_slug: str, signal: str, catalyst: str) -> str:
+        # Collapse ladder/date variants like us-x-iran-peace-by-may-26 / june-1
+        # so one scan cannot flood Discord with the same narrative.
+        family = re.sub(
+            r"-(?:by-)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*-?\d{1,2}(?:-\d{4})?$",
+            "",
+            market_slug.lower(),
+        )
+        family = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", family)
+        source = re.sub(r"[^a-z0-9]+", "-", (catalyst or "no-source").lower()).strip("-")[:48]
+        return f"{family}:{self._signal_family(signal)}:{source}"
+
+    def _is_family_on_cooldown(self, family_key: str) -> bool:
+        now = datetime.now(timezone.utc).timestamp()
+        last_seen = self.family_cooldowns.get(family_key)
+        return bool(last_seen and now - last_seen < self.family_cooldown_seconds)
+
+    def _mark_family_seen(self, family_key: str) -> None:
+        self.family_cooldowns[family_key] = datetime.now(timezone.utc).timestamp()
 
     def _is_geo_relevant(self, text: str) -> bool:
         return self._has_geo_keyword(text) and self._has_geo_confirmation_term(text)

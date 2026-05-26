@@ -16,9 +16,10 @@ from app.scanners.basket_scanner import BasketScanner
 from app.scanners.resolution_assistant import ResolutionAssistant
 from app.scanners.geo_sniper import GeoSniper
 from app.scanners.cross_venue_arb_scanner import CrossVenueArbScanner
+from app.scanners.wallet_tracker import WalletTracker
 from app.core.server_manager import server_manager
 
-# Logging Setup - Windows-compatible encoding
+# Logging Setup
 import io
 logging.basicConfig(
     level=logging.INFO, 
@@ -50,6 +51,7 @@ class PolyQuantBot(commands.Bot):
         self.resolution_assistant = ResolutionAssistant(self)
         self.geo_sniper = GeoSniper(self)
         self.cross_venue_arb_scanner = CrossVenueArbScanner(self)
+        self.wallet_tracker = WalletTracker(self)
         self._background_tasks_started = False
 
     async def on_ready(self):
@@ -107,9 +109,11 @@ class PolyQuantBot(commands.Bot):
 
         self.loop.create_task(self.geo_sniper.start())
         self.loop.create_task(self.cross_venue_arb_scanner.start())
+        self.loop.create_task(self.wallet_tracker.start())
         logger.info("Cross-Venue Arb Scanner: Active (exact Poly/Kalshi mappings only)")
+        logger.info("🐋 Wallet Tracker: Active (configured whale wallets)")
         logger.info("🛰️ Geo Sniper: Active (Geopolitical resolution alerts)")
-        
+
         logger.info("✅ All systems operational - Dual Engine Mode")
     
     async def on_guild_join(self, guild: discord.Guild):
